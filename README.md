@@ -1,4 +1,4 @@
-# Lagom SQS provider
+# Lagom Kinesis provider
 
 An Implementation of the Lagom Message Broker API for AWS's Kinesis.
 
