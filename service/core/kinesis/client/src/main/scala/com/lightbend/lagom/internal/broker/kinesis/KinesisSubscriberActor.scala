@@ -13,7 +13,7 @@ import akka.stream.{KillSwitch, KillSwitches, Materializer}
 import com.amazonaws.auth._
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.KinesisClientLibConfiguration
 import com.gilt.gfc.aws.kinesis.akka.{KinesisNonBlockingStreamSource, KinesisStreamConsumerConfig}
-import com.gilt.gfc.aws.kinesis.client.{KCLConfiguration, KinesisRecordReader}
+import com.gilt.gfc.aws.kinesis.client.{KCLConfiguration, KinesisClientEndpoints, KinesisRecordReader}
 import com.lightbend.lagom.internal.broker.kinesis.KinesisSubscriberActor._
 import com.lightbend.lagom.internal.broker.kinesis.ServiceType._
 
@@ -131,9 +131,9 @@ private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfi
   private def atLeastOnce(flow: Flow[Message, Done, _],
                           kinesisEndpoint: Option[String],
                           dynamoEndpoint: Option[String]): Source[Done, _] = {
-    val streamConfig = buildKinesisStreamConsumerConfig[Message](consumerConfig, topicId, groupId)
-    val kclConfig = buildKinesisClientConfig(kinesisConfig, streamConfig, kinesisEndpoint, dynamoEndpoint)
-    val pairedCommittableSource = KinesisNonBlockingStreamSource(streamConfig, Some(kclConfig))
+    val streamConfig = buildKinesisStreamConsumerConfig[Message](consumerConfig, topicId, groupId, kinesisConfig,
+      kinesisEndpoint, dynamoEndpoint)
+    val pairedCommittableSource = KinesisNonBlockingStreamSource(streamConfig)
 
     pairedCommittableSource.via(flow)
   }
@@ -142,13 +142,23 @@ private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfi
 object KinesisSubscriberActor {
   def buildKinesisStreamConsumerConfig[T](consumerConfig: ConsumerConfig,
                                           topicId: String,
-                                          applicationName: String): KinesisStreamConsumerConfig[T] = {
+                                          applicationName: String,
+                                          kinesisConfig: KinesisConfig,
+                                          kinesisEndpoint: Option[String],
+                                          dynamoDbEndpoint: Option[String]): KinesisStreamConsumerConfig[T] = {
     val credentialsProvider =
       new AWSCredentialsProviderChain(
         new AWSStaticCredentialsProvider(
           new BasicAWSCredentials(consumerConfig.awsAccessKey.orNull, consumerConfig.awsSecretKey.orNull)),
         new DefaultAWSCredentialsProviderChain()
       )
+
+    val endpoints = for {
+      k <- kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint)
+      d <- dynamoDbEndpoint.orElse(kinesisConfig.dynamodbEndpoint)
+    } yield {
+      KinesisClientEndpoints(k, d)
+    }
 
     KinesisStreamConsumerConfig(
       topicId,
@@ -157,27 +167,9 @@ object KinesisSubscriberActor {
       credentialsProvider,
       credentialsProvider,
       initialPositionInStream = consumerConfig.initialPositionInStream,
-      regionName = consumerConfig.regionName
+      regionName = consumerConfig.regionName,
+      kinesisClientEndpoints = endpoints
     )
-  }
-
-  def buildKinesisClientConfig(kinesisConfig: KinesisConfig,
-                               streamConfig: KinesisStreamConsumerConfig[_],
-                               kinesisEndpoint: Option[String],
-                               dynamoDbEndpoint: Option[String]): KinesisClientLibConfiguration = {
-
-    val kclConfig = KCLConfiguration(
-      streamConfig.applicationName,
-      streamConfig.streamName,
-      streamConfig.kinesisCredentialsProvider,
-      streamConfig.dynamoCredentialsProvider,
-      streamConfig.cloudWatchCredentialsProvider,
-      streamConfig.regionName
-    )
-    kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint).foreach(kclConfig.withKinesisEndpoint)
-    dynamoDbEndpoint.orElse(kinesisConfig.dynamodbEndpoint).foreach(kclConfig.withDynamoDBEndpoint)
-
-    kclConfig
   }
 
   def props[Message](kinesisConfig: KinesisConfig,
