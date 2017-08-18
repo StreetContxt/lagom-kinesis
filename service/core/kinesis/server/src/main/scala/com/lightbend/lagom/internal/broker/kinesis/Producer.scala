@@ -12,7 +12,7 @@ import akka.pattern.{BackoffSupervisor, pipe}
 import akka.persistence.query.Offset
 import akka.stream._
 import akka.stream.scaladsl._
-import com.amazonaws.auth.{AWSStaticCredentialsProvider, BasicAWSCredentials}
+import com.amazonaws.auth.{AWSCredentialsProvider, AWSStaticCredentialsProvider, BasicAWSCredentials, DefaultAWSCredentialsProviderChain}
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration
 import com.amazonaws.services.kinesis.AmazonKinesisClientBuilder
 import com.gilt.gfc.aws.kinesis.client.{KinesisPublisher, KinesisRecordWriter}
@@ -193,8 +193,8 @@ private[lagom] object Producer {
       context.become(active)
     }
 
-    private def eventsPublisherFlow(serviceLocatorUri: Option[String], offsetDao: OffsetDao) =
-      Flow.fromGraph(GraphDSL.create(kinesisFlowPublisher(serviceLocatorUri)) { implicit builder =>
+    private def eventsPublisherFlow(kinesisUri: Option[String], offsetDao: OffsetDao) =
+      Flow.fromGraph(GraphDSL.create(kinesisFlowPublisher(kinesisUri)) { implicit builder =>
         publishFlow =>
           import GraphDSL.Implicits._
           val unzip = builder.add(Unzip[Message, Offset])
@@ -209,27 +209,27 @@ private[lagom] object Producer {
           FlowShape(unzip.in, offsetCommitter.out)
       })
 
-    private def kinesisFlowPublisher(serviceLocatorUri: Option[String]): Flow[Message, _, _] = {
-      val builder = AmazonKinesisClientBuilder.standard()
-
+    private def kinesisFlowPublisher(kinesisUri: Option[String]): Flow[Message, _, _] = {
       if (kinesisConfig.kinesisEndpoint.isDefined ^ producerConfig.regionName.isDefined)
         throw new IllegalStateException("kinesis endpoint and region name must either both be defined or both be blank")
 
-      serviceLocatorUri.orElse(kinesisConfig.kinesisEndpoint).zip(producerConfig.regionName)
-        .foreach{ case (kinesisEndpoint, regionName) =>
-          builder.withEndpointConfiguration(new EndpointConfiguration(kinesisEndpoint, regionName))
-        }
+      val awsEndpointConfig = kinesisUri.orElse(kinesisConfig.kinesisEndpoint).zip(producerConfig.regionName)
+        .map { case (kinesisEndpoint, regionName) =>
+          new EndpointConfiguration(kinesisEndpoint, regionName)
+        }.headOption
 
       if (producerConfig.awsAccessKey.isDefined ^ producerConfig.awsSecretKey.isDefined)
         throw new IllegalStateException("AWS access key and secret key must either both be defined or both be blank")
 
-      producerConfig.awsAccessKey.zip(producerConfig.awsSecretKey)
-        .foreach{ case (awsAccessKey, awsSecretKey) =>
-          builder.withCredentials(new AWSStaticCredentialsProvider(new BasicAWSCredentials(awsAccessKey, awsSecretKey)))
-        }
+      val awsCredentialsProvider: AWSCredentialsProvider = producerConfig.awsAccessKey.zip(producerConfig.awsSecretKey)
+        .map({ case (awsAccessKey, awsSecretKey) =>
+          new AWSStaticCredentialsProvider(new BasicAWSCredentials(awsAccessKey, awsSecretKey))
+        }).headOption.getOrElse(new DefaultAWSCredentialsProviderChain())
 
-
-      val publisher = KinesisPublisher(kinesisClient = Some(builder.build()))
+      val publisher = KinesisPublisher(
+        awsCredentialsProvider = awsCredentialsProvider,
+        awsEndpointConfig = awsEndpointConfig
+      )
 
       Flow
         .fromFunction[Message, Message](identity)
