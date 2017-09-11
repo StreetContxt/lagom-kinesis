@@ -6,7 +6,7 @@ package com.lightbend.lagom.internal.broker.kinesis
 import java.util.concurrent.TimeUnit
 
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.InitialPositionInStream
-import com.typesafe.config.Config
+import com.typesafe.config.{Config, ConfigException}
 
 import scala.concurrent.duration.{FiniteDuration, _}
 
@@ -14,7 +14,7 @@ sealed trait KinesisConfig {
   /** The name of the Kinesis server to look up out of the service locator. */
   def kinesisServiceName: Option[String]
 
-  /** The name of the Kinesis server to look up out of the service locator. */
+  /** The name of the DynamoDB server to look up out of the service locator. */
   def dynamodbServiceName: Option[String]
 
   /** A Url for the Kinesis endpoint. Will be ignored if serviceName is defined. */
@@ -33,6 +33,10 @@ object KinesisConfig {
     override val kinesisServiceName: Option[String] = Some(conf.getString("kinesis-service-name")).filter(_.nonEmpty)
     override val dynamodbEndpoint: Option[String] = Some(conf.getString("dynamodb-endpoint")).filter(_.nonEmpty)
     override val dynamodbServiceName: Option[String] = Some(conf.getString("dynamodb-service-name")).filter(_.nonEmpty)
+    if((kinesisEndpoint.isDefined || kinesisServiceName.isDefined) ^
+      (dynamodbEndpoint.isDefined || dynamodbServiceName.isDefined )) {
+      throw new ConfigException.Generic("kinesis and dynamo connection settings must either both be set or unset")
+    }
   }
 
 }

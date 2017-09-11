@@ -2,7 +2,7 @@ organization in ThisBuild := "lagom-kinesis"
 scalaVersion in ThisBuild := "2.11.8"
 
 val slf4j = "org.slf4j" % "log4j-over-slf4j" % "1.7.21"
-val akkaStreamKinesis = "com.gilt" %% "gfc-aws-kinesis-akka" % "0.11.3-SNAPSHOT"
+val akkaStreamKinesis = "com.gilt" %% "gfc-aws-kinesis-akka" % "0.13.0"
 val awsJavaSdk = "com.amazonaws" % "aws-java-sdk" % "1.11.98"
 val scalaTest = "org.scalatest" %% "scalatest" % "3.0.1"
 val lagomApi = "com.lightbend.lagom" %% "lagom-api" % "1.3.0"
