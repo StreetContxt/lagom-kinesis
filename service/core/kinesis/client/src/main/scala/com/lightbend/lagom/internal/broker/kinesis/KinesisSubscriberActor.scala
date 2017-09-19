@@ -157,7 +157,7 @@ object KinesisSubscriberActor {
       k <- kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint)
       d <- dynamoDbEndpoint.orElse(kinesisConfig.dynamodbEndpoint)
     } yield {
-      KinesisClientEndpoints(k, d)
+      KinesisClientEndpoints(dynamoDBEndpoint = d, kinesisEndpoint = k)
     }
 
     KinesisStreamConsumerConfig(
