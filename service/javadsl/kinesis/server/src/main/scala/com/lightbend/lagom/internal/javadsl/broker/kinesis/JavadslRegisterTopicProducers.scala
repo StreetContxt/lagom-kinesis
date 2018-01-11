@@ -11,7 +11,7 @@ import akka.persistence.query.Offset
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
 import com.lightbend.lagom.internal.broker.TaggedOffsetTopicProducer
-import com.lightbend.lagom.internal.broker.kinesis.{KinesisConfig, Producer}
+import com.lightbend.lagom.internal.broker.kinesis.{KinesisConfig, KinesisOutboundRecord, Producer}
 import com.lightbend.lagom.internal.javadsl.api.MethodTopicHolder
 import com.lightbend.lagom.internal.javadsl.api.broker.TopicFactory
 import com.lightbend.lagom.internal.javadsl.persistence.OffsetAdapter
@@ -74,6 +74,14 @@ class JavadslRegisterTopicProducers @Inject()(resolvedServices: ResolvedServices
                   } else None
                 }
 
+                val serializer = { m: AnyRef =>
+                  KinesisOutboundRecord(
+                    data = topicCall.messageSerializer.serializerForRequest.serialize(m).toByteBuffer,
+                    partitionKey = partitionKeyStrategy.getOrElse({ (i: Any) => i.hashCode.toString })(m),
+                    explicitHashKey = None
+                  )
+                }
+
                 Producer.startTaggedOffsetProducer(
                   actorSystem,
                   tags.map(_.tag),
@@ -81,8 +89,7 @@ class JavadslRegisterTopicProducers @Inject()(resolvedServices: ResolvedServices
                   locateService,
                   topicId.value(),
                   eventStreamFactory,
-                  new JavadslKinesisRecordWriter(topicCall.messageSerializer().serializerForRequest(),
-                    partitionKeyStrategy.getOrElse({ (i: Any) => i.hashCode.toString })),
+                  serializer,
                   offsetStore)
 
               case other => log.warn {

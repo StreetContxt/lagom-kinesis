@@ -4,7 +4,7 @@
 package com.lightbend.lagom.internal.javadsl.broker.kinesis
 
 import akka.actor.ActorSystem
-import akka.stream.Materializer
+import akka.stream.ActorMaterializer
 import com.lightbend.lagom.internal.broker.kinesis.KinesisConfig
 import com.lightbend.lagom.javadsl.api.Descriptor.TopicCall
 import com.lightbend.lagom.javadsl.api.broker.Topic.TopicId
@@ -21,7 +21,7 @@ private[lagom] class JavadslKinesisTopic[Message](kinesisConfig: KinesisConfig,
                                                   info: ServiceInfo,
                                                   system: ActorSystem,
                                                   serviceLocator: ServiceLocator)
-                                                 (implicit mat: Materializer, ec: ExecutionContext)
+                                                 (implicit mat: ActorMaterializer, ec: ExecutionContext)
   extends Topic[Message] {
 
   override def topicId: TopicId = topicCall.topicId

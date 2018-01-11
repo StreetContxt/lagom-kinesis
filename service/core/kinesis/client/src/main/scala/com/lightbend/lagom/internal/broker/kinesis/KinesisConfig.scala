@@ -90,6 +90,10 @@ sealed trait ConsumerConfig extends ClientConfig {
   def applicationName: String
 
   def initialPositionInStream: InitialPositionInStream
+
+  def offsetBuffer: Int
+
+  def batchSize: Int
 }
 
 object ConsumerConfig {
@@ -104,6 +108,9 @@ object ConsumerConfig {
 
     def initialPositionInStream: InitialPositionInStream =
       InitialPositionInStream.valueOf(conf.getString("initial-position-in-stream"))
+
+    override def offsetBuffer: Int = conf.getInt("max-buffer-size")
+    override def batchSize: Int = conf.getInt("max-batch-size")
   }
 
 }

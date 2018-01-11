@@ -8,11 +8,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import akka.Done
 import akka.actor.{ActorSystem, SupervisorStrategy}
 import akka.pattern.BackoffSupervisor
-import akka.stream.Materializer
+import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Source}
 import akka.util.ByteString
-import com.amazonaws.services.kinesis.model.Record
-import com.gilt.gfc.aws.kinesis.client.KinesisRecordReader
 import com.lightbend.lagom.internal.broker.kinesis._
 import com.lightbend.lagom.scaladsl.api.Descriptor.TopicCall
 import com.lightbend.lagom.scaladsl.api.broker.Subscriber
@@ -31,7 +29,7 @@ private[lagom] class ScaladslKinesisSubscriber[Message](kinesisConfig: KinesisCo
                                                         info: ServiceInfo,
                                                         system: ActorSystem,
                                                         serviceLocator: ServiceLocator)
-                                                       (implicit mat: Materializer, ec: ExecutionContext)
+                                                       (implicit mat: ActorMaterializer, ec: ExecutionContext)
   extends Subscriber[Message] {
   private val log = LoggerFactory.getLogger(classOf[ScaladslKinesisSubscriber[_]])
 
@@ -62,16 +60,10 @@ private[lagom] class ScaladslKinesisSubscriber[Message](kinesisConfig: KinesisCo
     ???
   }
 
-  private val deserializer: KinesisRecordReader[Message] = {
+  private val deserializer: NegotiatedDeserializer[Message, ByteString] = {
     val messageSerializer = topicCall.messageSerializer
     val protocol = messageSerializer.serializerForRequest.protocol
-    val negotiatedDeserializer: NegotiatedDeserializer[Message, ByteString] =
-      messageSerializer.deserializer(protocol)
-
-    new KinesisRecordReader[Message]() {
-      override def apply(r: Record): Message =
-        negotiatedDeserializer.deserialize(ByteString(r.getData))
-    }
+    messageSerializer.deserializer(protocol)
   }
 
   override def atLeastOnce(flow: Flow[Message, Done, _]): Future[Done] = {
@@ -83,7 +75,7 @@ private[lagom] class ScaladslKinesisSubscriber[Message](kinesisConfig: KinesisCo
       topicCall.topicId.name,
       groupId.groupId,
       flow,
-      deserializer,
+      deserializer.deserialize,
       streamCompleted)
 
 

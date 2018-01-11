@@ -10,11 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import akka.Done
 import akka.actor.{ActorSystem, SupervisorStrategy}
 import akka.pattern.BackoffSupervisor
-import akka.stream.Materializer
+import akka.stream.ActorMaterializer
 import akka.stream.javadsl.{Flow, Source}
 import akka.util.ByteString
-import com.amazonaws.services.kinesis.model.Record
-import com.gilt.gfc.aws.kinesis.client.KinesisRecordReader
 import com.lightbend.lagom.internal.broker.kinesis._
 import com.lightbend.lagom.javadsl.api.Descriptor.TopicCall
 import com.lightbend.lagom.javadsl.api.broker.Subscriber
@@ -35,7 +33,7 @@ private[lagom] class JavadslKinesisSubscriber[Message](kinesisConfig: KinesisCon
                                                        info: ServiceInfo,
                                                        system: ActorSystem,
                                                        serviceLocator: ServiceLocator)
-                                                      (implicit mat: Materializer, ec: ExecutionContext)
+                                                      (implicit mat: ActorMaterializer, ec: ExecutionContext)
   extends Subscriber[Message] {
   private val log = LoggerFactory.getLogger(classOf[JavadslKinesisSubscriber[_]])
 
@@ -66,13 +64,10 @@ private[lagom] class JavadslKinesisSubscriber[Message](kinesisConfig: KinesisCon
     ???
   }
 
-  private val deserializer: KinesisRecordReader[Message] = {
+  private val deserializer: NegotiatedDeserializer[Message, ByteString] = {
     val messageSerializer = topicCall.messageSerializer
     val protocol = messageSerializer.serializerForRequest.protocol
-    val negotiatedDeserializer: NegotiatedDeserializer[Message, ByteString] =
-      messageSerializer.deserializer(protocol)
-
-    new JavadslKinesisRecordReader[Message](negotiatedDeserializer)
+    messageSerializer.deserializer(protocol)
   }
 
   private def locateService(name: String): Future[Option[URI]] =
@@ -90,7 +85,7 @@ private[lagom] class JavadslKinesisSubscriber[Message](kinesisConfig: KinesisCon
       topicCall.topicId().value(),
       groupId.groupId(),
       flow.asScala,
-      deserializer,
+      deserializer.deserialize,
       streamCompleted)
 
 

@@ -12,34 +12,36 @@ import akka.pattern.{BackoffSupervisor, pipe}
 import akka.persistence.query.Offset
 import akka.stream._
 import akka.stream.scaladsl._
+import akka.util.ByteString
 import com.amazonaws.auth.{AWSCredentialsProvider, AWSStaticCredentialsProvider, BasicAWSCredentials, DefaultAWSCredentialsProviderChain}
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration
-import com.amazonaws.services.kinesis.AmazonKinesisClientBuilder
-import com.gilt.gfc.aws.kinesis.client.{KinesisPublisher, KinesisRecordWriter}
+import com.amazonaws.services.kinesis.producer.KinesisProducerConfiguration
+import com.contxt.kinesis.{KinesisRecord, ScalaKinesisProducer}
 import com.lightbend.lagom.internal.broker.kinesis.ServiceType.{DynamoService, KinesisService}
 import com.lightbend.lagom.internal.persistence.cluster.ClusterDistribution.EnsureActive
 import com.lightbend.lagom.internal.persistence.cluster.{ClusterDistribution, ClusterDistributionSettings}
 import com.lightbend.lagom.spi.persistence.{OffsetDao, OffsetStore}
 
 import scala.collection.immutable
+import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Failure
 
 /**
-  * A Producer for publishing messages in Kinesis using the akka-stream-kinesis API.
-  */
+ * A Producer for publishing messages in Kinesis using the akka-stream-kinesis API.
+ */
 private[lagom] object Producer {
 
   def startTaggedOffsetProducer[Message](
-                                          system: ActorSystem,
-                                          tags: immutable.Seq[String],
-                                          kinesisConfig: KinesisConfig,
-                                          locateService: String => Future[Option[URI]],
-                                          topicId: String,
-                                          eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
-                                          serializer: KinesisRecordWriter[Message],
-                                          offsetStore: OffsetStore
-                                        )(implicit mat: Materializer, ec: ExecutionContext): Unit = {
+    system: ActorSystem,
+    tags: immutable.Seq[String],
+    kinesisConfig: KinesisConfig,
+    locateService: String => Future[Option[URI]],
+    topicId: String,
+    eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
+    serializer: Message => KinesisOutboundRecord,
+    offsetStore: OffsetStore
+  )(implicit mat: Materializer, ec: ExecutionContext): Unit = {
 
     val producerConfig: ProducerConfig = ProducerConfig(system.settings.config)
     val publisherProps = TaggedOffsetProducerActor.props(kinesisConfig, producerConfig, locateService, topicId,
@@ -60,14 +62,14 @@ private[lagom] object Producer {
   }
 
   private class TaggedOffsetProducerActor[Message](
-                                                    kinesisConfig: KinesisConfig,
-                                                    producerConfig: ProducerConfig,
-                                                    locateService: String => Future[Option[URI]],
-                                                    topicId: String,
-                                                    eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
-                                                    serializer: KinesisRecordWriter[Message],
-                                                    offsetStore: OffsetStore
-                                                  )(implicit mat: Materializer, ec: ExecutionContext) extends Actor with ActorLogging {
+    kinesisConfig: KinesisConfig,
+    producerConfig: ProducerConfig,
+    locateService: String => Future[Option[URI]],
+    topicId: String,
+    eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
+    serializer: Message => KinesisOutboundRecord,
+    offsetStore: OffsetStore
+  )(implicit mat: Materializer, ec: ExecutionContext) extends Actor with ActorLogging {
 
     /** Switch used to terminate the on-going Kinesis publishing stream when this actor fails. */
     private var shutdown: Option[KillSwitch] = None
@@ -82,22 +84,27 @@ private[lagom] object Producer {
         // Left means no service lookup was attempted, Right means a service lookup was done - this allows us to
         // distinguish between no service lookup, and a not found service lookup.
 
-
         kinesisConfig.kinesisServiceName foreach { kinesisName =>
-          log.debug("Looking up kinesis service with name [{}] from service locator for at least once source",
-            kinesisName)
+          log.debug(
+            "Looking up kinesis service with name [{}] from service locator for at least once source",
+            kinesisName
+          )
           locateService(kinesisName).map((ServiceType.kinesisService(kinesisName), _)) pipeTo self
         }
 
         kinesisConfig.dynamodbServiceName foreach { dynamoName =>
-          log.debug("Looking up dynamo service with name [{}] from service locator for at least once source",
-            dynamoName)
+          log.debug(
+            "Looking up dynamo service with name [{}] from service locator for at least once source",
+            dynamoName
+          )
           locateService(dynamoName).map((ServiceType.dynamoService(dynamoName), _)) pipeTo self
         }
 
-        context.become(locatingServices(tag,
+        context.become(locatingServices(
+          tag,
           kinesisDone = kinesisConfig.kinesisServiceName.isEmpty,
-          dynamoDone = kinesisConfig.dynamodbServiceName.isEmpty))
+          dynamoDone = kinesisConfig.dynamodbServiceName.isEmpty
+        ))
     }
 
     def generalHandler: Receive = {
@@ -107,13 +114,14 @@ private[lagom] object Producer {
       case EnsureActive(_) =>
     }
 
-
-    private def locatingServices(tag: String,
-                                 kinesisDone: Boolean = false,
-                                 dynamoDone: Boolean = false,
-                                 kinesisEndpoint: Option[String] = None,
-                                 dynamoEndpoint: Option[String] = None,
-                                 offsetDao: Option[OffsetDao] = None): Receive = {
+    private def locatingServices(
+      tag: String,
+      kinesisDone: Boolean = false,
+      dynamoDone: Boolean = false,
+      kinesisEndpoint: Option[String] = None,
+      dynamoEndpoint: Option[String] = None,
+      offsetDao: Option[OffsetDao] = None
+    ): Receive = {
 
       case (KinesisService(name), None) =>
         log.error("Unable to locate Kinesis service named [{}]", name)
@@ -194,19 +202,18 @@ private[lagom] object Producer {
     }
 
     private def eventsPublisherFlow(kinesisUri: Option[String], offsetDao: OffsetDao) =
-      Flow.fromGraph(GraphDSL.create(kinesisFlowPublisher(kinesisUri)) { implicit builder =>
-        publishFlow =>
-          import GraphDSL.Implicits._
-          val unzip = builder.add(Unzip[Message, Offset])
-          val zip = builder.add(Zip[Any, Offset])
-          val offsetCommitter = builder.add(Flow.fromFunction { e: (Any, Offset) =>
-            offsetDao.saveOffset(e._2)
-          })
+      Flow.fromGraph(GraphDSL.create(kinesisFlowPublisher(kinesisUri)) { implicit builder => publishFlow =>
+        import GraphDSL.Implicits._
+        val unzip = builder.add(Unzip[Message, Offset])
+        val zip = builder.add(Zip[Any, Offset])
+        val offsetCommitter = builder.add(Flow.fromFunction { e: (Any, Offset) =>
+          offsetDao.saveOffset(e._2)
+        })
 
-          unzip.out0 ~> publishFlow ~> zip.in0
-          unzip.out1 ~> zip.in1
-          zip.out ~> offsetCommitter.in
-          FlowShape(unzip.in, offsetCommitter.out)
+        unzip.out0 ~> publishFlow ~> zip.in0
+        unzip.out1 ~> zip.in1
+        zip.out ~> offsetCommitter.in
+        FlowShape(unzip.in, offsetCommitter.out)
       })
 
     private def kinesisFlowPublisher(kinesisUri: Option[String]): Flow[Message, _, _] = {
@@ -214,40 +221,57 @@ private[lagom] object Producer {
         throw new IllegalStateException("kinesis endpoint and region name must either both be defined or both be blank")
 
       val awsEndpointConfig = kinesisUri.orElse(kinesisConfig.kinesisEndpoint).zip(producerConfig.regionName)
-        .map { case (kinesisEndpoint, regionName) =>
-          new EndpointConfiguration(kinesisEndpoint, regionName)
+        .map {
+          case (kinesisEndpoint, regionName) =>
+            new EndpointConfiguration(kinesisEndpoint, regionName)
         }.headOption
 
       if (producerConfig.awsAccessKey.isDefined ^ producerConfig.awsSecretKey.isDefined)
         throw new IllegalStateException("AWS access key and secret key must either both be defined or both be blank")
 
       val awsCredentialsProvider: AWSCredentialsProvider = producerConfig.awsAccessKey.zip(producerConfig.awsSecretKey)
-        .map({ case (awsAccessKey, awsSecretKey) =>
-          new AWSStaticCredentialsProvider(new BasicAWSCredentials(awsAccessKey, awsSecretKey))
+        .map({
+          case (awsAccessKey, awsSecretKey) =>
+            new AWSStaticCredentialsProvider(new BasicAWSCredentials(awsAccessKey, awsSecretKey))
         }).headOption.getOrElse(new DefaultAWSCredentialsProviderChain())
 
-      val publisher = KinesisPublisher(
-        awsCredentialsProvider = awsCredentialsProvider,
-        awsEndpointConfig = awsEndpointConfig
-      )
+      val kplConfig: KinesisProducerConfiguration = {
+        new KinesisProducerConfiguration()
+          .setCredentialsProvider(awsCredentialsProvider)
+          .setRecordMaxBufferedTime(1.millis.toMillis)
+          .setRequestTimeout(10.seconds.toMillis)
+      }
 
-      Flow
-        .fromFunction[Message, Message](identity)
-        .mapAsync(1)(msg => publisher.publishBatch(topicId, List(msg))(serializer))
+      val configuration: KinesisProducerConfiguration = (for {
+        withRegion <- applyIfDefined(kplConfig, producerConfig.regionName) {
+          _.setRegion(_)
+        }
+        withKinesisEndpoint <- applyIfDefined(withRegion, kinesisConfig.kinesisEndpoint) {
+          _.setKinesisEndpoint(_)
+        }
+      } yield withKinesisEndpoint).getOrElse(kplConfig)
+
+
+      val producer = ScalaKinesisProducer(topicId, configuration)
+
+      Flow[Message].map(serializer).map(msg => producer.send(msg.partitionKey, msg.data, msg.explicitHashKey))
     }
 
   }
 
+  def applyIfDefined[T, V](t: T, maybeV: Option[V])(f: (T, V) => T): Option[T] =
+    maybeV.map(v => f(t, v)).orElse(Some(t))
+
   private object TaggedOffsetProducerActor {
     def props[Message](
-                        kinesisConfig: KinesisConfig,
-                        producerConfig: ProducerConfig,
-                        locateService: String => Future[Option[URI]],
-                        topicId: String,
-                        eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
-                        serializer: KinesisRecordWriter[Message],
-                        offsetStore: OffsetStore
-                      )(implicit mat: Materializer, ec: ExecutionContext) =
+      kinesisConfig: KinesisConfig,
+      producerConfig: ProducerConfig,
+      locateService: String => Future[Option[URI]],
+      topicId: String,
+      eventStreamFactory: (String, Offset) => Source[(Message, Offset), _],
+      serializer: Message => KinesisOutboundRecord,
+      offsetStore: OffsetStore
+    )(implicit mat: Materializer, ec: ExecutionContext) =
       Props(new TaggedOffsetProducerActor[Message](kinesisConfig, producerConfig, locateService,
         topicId, eventStreamFactory,
         serializer, offsetStore))

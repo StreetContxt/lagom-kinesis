@@ -7,8 +7,9 @@ import akka.actor.ActorSystem
 import akka.persistence.query.Offset
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
+import com.contxt.kinesis.KinesisRecord
 import com.lightbend.internal.broker.TaggedOffsetTopicProducer
-import com.lightbend.lagom.internal.broker.kinesis.{KinesisConfig, Producer}
+import com.lightbend.lagom.internal.broker.kinesis.{KinesisConfig, KinesisOutboundRecord, Producer}
 import com.lightbend.lagom.internal.scaladsl.api.broker.TopicFactory
 import com.lightbend.lagom.scaladsl.api.Descriptor.TopicCall
 import com.lightbend.lagom.scaladsl.api.ServiceSupport.ScalaMethodTopic
@@ -21,8 +22,8 @@ import org.slf4j.LoggerFactory
 import scala.concurrent.ExecutionContext
 
 class ScaladslRegisterTopicProducers(lagomServer: LagomServer, topicFactory: TopicFactory,
-                                     info: ServiceInfo, actorSystem: ActorSystem, offsetStore: OffsetStore,
-                                     serviceLocator: ServiceLocator)(implicit ec: ExecutionContext, mat: Materializer) {
+  info: ServiceInfo, actorSystem: ActorSystem, offsetStore: OffsetStore,
+  serviceLocator: ServiceLocator)(implicit ec: ExecutionContext, mat: Materializer) {
 
   private val log = LoggerFactory.getLogger(classOf[ScaladslRegisterTopicProducers])
   private val kinesisConfig = KinesisConfig(actorSystem.settings.config)
@@ -55,10 +56,17 @@ class ScaladslRegisterTopicProducers(lagomServer: LagomServer, topicFactory: Top
                 }
 
                 val partitionKeyStrategy: Option[Any => String] = {
-                  topicCall.properties.get(KafkaProperties.partitionKeyStrategy).map { pks =>
-                    message =>
-                      pks.computePartitionKey(message)
+                  topicCall.properties.get(KafkaProperties.partitionKeyStrategy).map { pks => message =>
+                    pks.computePartitionKey(message)
                   }
+                }
+
+                val serializer = { m: Any =>
+                  KinesisOutboundRecord(
+                    data = topicCall.messageSerializer.serializerForRequest.serialize(m).toByteBuffer,
+                    partitionKey = partitionKeyStrategy.getOrElse({ (i: Any) => i.hashCode.toString })(m),
+                    explicitHashKey = None
+                  )
                 }
 
                 Producer.startTaggedOffsetProducer(
@@ -68,9 +76,9 @@ class ScaladslRegisterTopicProducers(lagomServer: LagomServer, topicFactory: Top
                   serviceLocator.locate,
                   topicId.name,
                   eventStreamFactory,
-                  new ScaladslKinesisRecordWriter(topicCall.messageSerializer.serializerForRequest,
-                    partitionKeyStrategy.getOrElse({ (i: Any) => i.hashCode.toString })),
-                  offsetStore)
+                  serializer,
+                  offsetStore
+                )
               case other => log.warn {
                 s"Unknown topic producer ${other.getClass.getName}. " +
                   s"This will likely result in no events published to topic ${topicId.name} by service ${info.serviceName}."
