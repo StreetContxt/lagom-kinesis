@@ -2,7 +2,8 @@ organization in ThisBuild := "lagom-kinesis"
 scalaVersion in ThisBuild := "2.11.8"
 
 val slf4j = "org.slf4j" % "log4j-over-slf4j" % "1.7.21"
-val akkaStreamKinesis = "com.gilt" %% "gfc-aws-kinesis-akka" % "0.13.0"
+val akkaStreamKinesisConsumer = "com.contxt" %% "kcl-akka-stream" % "1.0.0-SNAPSHOT"
+val scalaKinesisProducer = "com.contxt" %% "kpl-scala" % "1.0.0-SNAPSHOT"
 val awsJavaSdk = "com.amazonaws" % "aws-java-sdk" % "1.11.98"
 val scalaTest = "org.scalatest" %% "scalatest" % "3.0.1"
 val lagomApi = "com.lightbend.lagom" %% "lagom-api" % "1.3.0"
@@ -32,7 +33,7 @@ lazy val `kinesis-client` = (project in file("service/core/kinesis/client"))
   .settings(
     libraryDependencies ++= Seq(
       slf4j,
-      akkaStreamKinesis,
+      akkaStreamKinesisConsumer,
       awsJavaSdk,
       lagomApi,
       scalaTest % Test
@@ -64,7 +65,8 @@ lazy val `kinesis-broker` = (project in file("service/core/kinesis/server"))
   .settings(
     libraryDependencies ++= Seq(
       slf4j,
-      akkaStreamKinesis,
+      akkaStreamKinesisConsumer,
+      scalaKinesisProducer,
       awsJavaSdk,
       lagomApi,
       lagomPersistenceCore,

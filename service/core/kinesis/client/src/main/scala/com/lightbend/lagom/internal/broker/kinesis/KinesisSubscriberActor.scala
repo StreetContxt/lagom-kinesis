@@ -4,34 +4,35 @@
 package com.lightbend.lagom.internal.broker.kinesis
 
 import java.net.URI
+import java.util.UUID
 
 import akka.Done
 import akka.actor.{Actor, ActorLogging, Props, Status}
 import akka.pattern.pipe
-import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
-import akka.stream.{KillSwitch, KillSwitches, Materializer}
+import akka.stream._
+import akka.stream.scaladsl.{Flow, GraphDSL, Keep, Sink, Source, Unzip, Zip}
+import akka.util.ByteString
 import com.amazonaws.auth._
-import com.amazonaws.services.kinesis.clientlibrary.lib.worker.KinesisClientLibConfiguration
-import com.gilt.gfc.aws.kinesis.akka.{KinesisNonBlockingStreamSource, KinesisStreamConsumerConfig}
-import com.gilt.gfc.aws.kinesis.client.{KCLConfiguration, KinesisClientEndpoints, KinesisRecordReader}
+import com.amazonaws.services.kinesis.clientlibrary.lib.worker.{DataFetchingStrategy, InitialPositionInStream, KinesisClientLibConfiguration}
+import com.contxt.kinesis.{KinesisRecord, KinesisSource}
 import com.lightbend.lagom.internal.broker.kinesis.KinesisSubscriberActor._
 import com.lightbend.lagom.internal.broker.kinesis.ServiceType._
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
 
-private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfig,
-                                                     consumerConfig: ConsumerConfig,
-                                                     locateService: String => Future[Option[URI]],
-                                                     topicId: String,
-                                                     groupId: String,
-                                                     flow: Flow[Message, Done, _],
-                                                     recordReader: KinesisRecordReader[Message],
-                                                     streamCompleted: Promise[Done]
-                                                    )(implicit mat: Materializer,
-                                                      ec: ExecutionContext) extends Actor
+private[lagom] class KinesisSubscriberActor[Message](
+  kinesisConfig: KinesisConfig,
+  consumerConfig: ConsumerConfig,
+  locateService: String => Future[Option[URI]],
+  topicId: String,
+  groupId: String,
+  flow: Flow[Message, Done, _],
+  recordReader: ByteString => Message,
+  streamCompleted: Promise[Done]
+)(implicit
+  mat: ActorMaterializer,
+  ec: ExecutionContext) extends Actor
   with ActorLogging {
-
-  implicit val krr: KinesisRecordReader[Message] = recordReader
 
   /** Switch used to terminate the on-going Kinesis publishing stream when this actor fails. */
   private var shutdown: Option[KillSwitch] = None
@@ -39,30 +40,37 @@ private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfi
   override def preStart(): Unit = {
 
     kinesisConfig.kinesisServiceName foreach { kinesisName =>
-      log.debug("Looking up kinesis service with name [{}] from service locator for at least once source",
-        kinesisName)
+      log.debug(
+        "Looking up kinesis service with name [{}] from service locator for at least once source",
+        kinesisName
+      )
       locateService(kinesisName).map((ServiceType.kinesisService(kinesisName), _)) pipeTo self
     }
 
     kinesisConfig.dynamodbServiceName foreach { dynamoName =>
-      log.debug("Looking up dynamo service with name [{}] from service locator for at least once source",
-        dynamoName)
+      log.debug(
+        "Looking up dynamo service with name [{}] from service locator for at least once source",
+        dynamoName
+      )
       locateService(dynamoName).map((ServiceType.dynamoService(dynamoName), _)) pipeTo self
     }
 
-    if(kinesisConfig.kinesisServiceName.isDefined || kinesisConfig.dynamodbServiceName.isDefined) {
+    if (kinesisConfig.kinesisServiceName.isDefined || kinesisConfig.dynamodbServiceName.isDefined) {
       context.become(locatingServices(
         kinesisDone = kinesisConfig.kinesisServiceName.isEmpty,
-        dynamoDone = kinesisConfig.dynamodbServiceName.isEmpty))
+        dynamoDone = kinesisConfig.dynamodbServiceName.isEmpty
+      ))
     } else {
       run(None, None)
     }
   }
 
-  private def locatingServices(kinesisDone: Boolean = false,
-                               dynamoDone: Boolean = false,
-                               kinesisEndpoint: Option[String] = None,
-                               dynamoEndpoint: Option[String] = None): Receive = {
+  private def locatingServices(
+    kinesisDone: Boolean = false,
+    dynamoDone: Boolean = false,
+    kinesisEndpoint: Option[String] = None,
+    dynamoEndpoint: Option[String] = None
+  ): Receive = {
     case Status.Failure(e) =>
       log.error(s"Error locating Kinesis or Dynamo service for topic [{}]: [{}]", topicId, e)
       throw e
@@ -110,7 +118,6 @@ private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfi
     context.become(running)
   }
 
-
   override def postStop(): Unit = {
     shutdown.foreach(_.shutdown())
   }
@@ -128,59 +135,97 @@ private[lagom] class KinesisSubscriberActor[Message](kinesisConfig: KinesisConfi
 
   override def receive: Receive = PartialFunction.empty
 
-  private def atLeastOnce(flow: Flow[Message, Done, _],
-                          kinesisEndpoint: Option[String],
-                          dynamoEndpoint: Option[String]): Source[Done, _] = {
+  private def atLeastOnce(
+    flow: Flow[Message, Done, _],
+    kinesisEndpoint: Option[String],
+    dynamoEndpoint: Option[String]
+  ): Source[Done, _] = {
     val streamConfig = buildKinesisStreamConsumerConfig[Message](consumerConfig, topicId, groupId, kinesisConfig,
       kinesisEndpoint, dynamoEndpoint)
-    val pairedCommittableSource = KinesisNonBlockingStreamSource(streamConfig)
+    val pairedCommittableSource = KinesisSource(streamConfig)(mat).map(kr => (kr, recordReader(kr.data)))
 
-    pairedCommittableSource.via(flow)
+    val committOffsetFlow =
+      Flow.fromGraph(GraphDSL.create(flow) { implicit builder => flow =>
+        import GraphDSL.Implicits._
+        val unzip = builder.add(Unzip[KinesisRecord, Message])
+        val zip = builder.add(Zip[KinesisRecord, Done])
+        val committer = {
+          val commitFlow = Flow[(KinesisRecord, Done)].map {
+            case (rec, _) =>
+              rec.markProcessed()
+              Done.getInstance()
+          }
+          builder.add(commitFlow)
+        }
+        // To allow the user flow to do its own batching, the offset side of the flow needs to effectively buffer
+        // infinitely to give full control of backpressure to the user side of the flow.
+        val offsetBuffer = Flow[KinesisRecord].buffer(consumerConfig.offsetBuffer, OverflowStrategy.backpressure)
+
+        unzip.out0 ~> offsetBuffer ~> zip.in0
+        unzip.out1 ~> flow ~> zip.in1
+        zip.out ~> committer.in
+
+        FlowShape(unzip.in, committer.out)
+      })
+
+    pairedCommittableSource.via(committOffsetFlow)
   }
 }
 
 object KinesisSubscriberActor {
-  def buildKinesisStreamConsumerConfig[T](consumerConfig: ConsumerConfig,
-                                          topicId: String,
-                                          applicationName: String,
-                                          kinesisConfig: KinesisConfig,
-                                          kinesisEndpoint: Option[String],
-                                          dynamoDbEndpoint: Option[String]): KinesisStreamConsumerConfig[T] = {
+  def buildKinesisStreamConsumerConfig[T](
+    consumerConfig: ConsumerConfig,
+    topicId: String,
+    applicationName: String,
+    kinesisConfig: KinesisConfig,
+    kinesisEndpoint: Option[String],
+    dynamoDbEndpoint: Option[String]
+  ): KinesisClientLibConfiguration = {
     val credentialsProvider =
       new AWSCredentialsProviderChain(
         new AWSStaticCredentialsProvider(
-          new BasicAWSCredentials(consumerConfig.awsAccessKey.orNull, consumerConfig.awsSecretKey.orNull)),
+          new BasicAWSCredentials(consumerConfig.awsAccessKey.orNull, consumerConfig.awsSecretKey.orNull)
+        ),
         new DefaultAWSCredentialsProviderChain()
       )
 
-    val endpoints = for {
-      k <- kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint)
-      d <- dynamoDbEndpoint.orElse(kinesisConfig.dynamodbEndpoint)
-    } yield {
-      KinesisClientEndpoints(dynamoDBEndpoint = d, kinesisEndpoint = k)
-    }
-
-    KinesisStreamConsumerConfig(
-      topicId,
+    val configuration = new KinesisClientLibConfiguration(
       applicationName,
+      topicId,
       credentialsProvider,
-      credentialsProvider,
-      credentialsProvider,
-      initialPositionInStream = consumerConfig.initialPositionInStream,
-      regionName = consumerConfig.regionName,
-      kinesisClientEndpoints = endpoints
+      UUID.randomUUID().toString
     )
+      .withCallProcessRecordsEvenForEmptyRecordList(true)
+      .withInitialPositionInStream(InitialPositionInStream.TRIM_HORIZON)
+      .withDataFetchingStrategy(DataFetchingStrategy.DEFAULT.toString)
+      .withMaxRecords(consumerConfig.batchSize)
+
+    (for {
+      withRegion <- applyIfDefined(configuration, consumerConfig.regionName) { _.withRegionName(_) }
+      withKinesisEndpoint <- applyIfDefined(withRegion,kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint)) {
+        _.withKinesisEndpoint(_)
+      }
+      withDynamoEndpoint <- applyIfDefined(withKinesisEndpoint,dynamoDbEndpoint.orElse(kinesisConfig.dynamodbEndpoint)) {
+        _.withDynamoDBEndpoint(_)
+      }
+    } yield withDynamoEndpoint).getOrElse(configuration)
   }
 
-  def props[Message](kinesisConfig: KinesisConfig,
-                     consumerConfig: ConsumerConfig,
-                     locateService: String => Future[Option[URI]],
-                     topicId: String,
-                     groupId: String,
-                     flow: Flow[Message, Done, _],
-                     recordReader: KinesisRecordReader[Message],
-                     streamCompleted: Promise[Done]
-                    )(implicit mat: Materializer, ec: ExecutionContext) =
+
+  def applyIfDefined[T, V](t: T, maybeV: Option[V])(f: (T, V) => T): Option[T] =
+    maybeV.map(v => f(t, v)).orElse(Some(t))
+
+
+  def props[Message](
+    kinesisConfig: KinesisConfig,
+    consumerConfig: ConsumerConfig,
+    locateService: String => Future[Option[URI]],
+    topicId: String,
+    groupId: String,
+    flow: Flow[Message, Done, _],
+    recordReader: ByteString => Message,
+    streamCompleted: Promise[Done]
+  )(implicit mat: ActorMaterializer, ec: ExecutionContext) =
     Props(new KinesisSubscriberActor[Message](
       kinesisConfig,
       consumerConfig,
@@ -189,5 +234,6 @@ object KinesisSubscriberActor {
       groupId,
       flow,
       recordReader,
-      streamCompleted))
+      streamCompleted
+    ))
 }

@@ -4,7 +4,7 @@
 package com.lightbend.lagom.internal.scaladsl.broker.kinesis
 
 import akka.actor.ActorSystem
-import akka.stream.Materializer
+import akka.stream.ActorMaterializer
 import com.lightbend.lagom.internal.broker.kinesis.KinesisConfig
 import com.lightbend.lagom.internal.scaladsl.api.broker.TopicFactory
 import com.lightbend.lagom.scaladsl.api.Descriptor.TopicCall
@@ -14,9 +14,12 @@ import com.lightbend.lagom.scaladsl.api.{ServiceInfo, ServiceLocator}
 import scala.concurrent.ExecutionContext
 
 /**
-  * Factory for creating topics instances.
-  */
-private[lagom] class KinesisTopicFactory(serviceInfo: ServiceInfo, system: ActorSystem, serviceLocator: ServiceLocator)(implicit materializer: Materializer, executionContext: ExecutionContext) extends TopicFactory {
+ * Factory for creating topics instances.
+ */
+private[lagom] class KinesisTopicFactory(serviceInfo: ServiceInfo, system: ActorSystem,
+  serviceLocator: ServiceLocator)(implicit
+  materializer: ActorMaterializer,
+  executionContext: ExecutionContext) extends TopicFactory {
 
   private val config = KinesisConfig(system.settings.config)
 

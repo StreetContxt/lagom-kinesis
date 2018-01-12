@@ -4,17 +4,17 @@
 package com.lightbend.lagom.scaladsl.broker.kinesis
 
 import akka.actor.ActorSystem
-import akka.stream.Materializer
-import com.lightbend.lagom.internal.scaladsl.api.broker.{ TopicFactory, TopicFactoryProvider }
+import akka.stream.ActorMaterializer
+import com.lightbend.lagom.internal.scaladsl.api.broker.{TopicFactory, TopicFactoryProvider}
 import com.lightbend.lagom.internal.scaladsl.broker.kinesis.KinesisTopicFactory
-import com.lightbend.lagom.scaladsl.api.{ ServiceInfo, ServiceLocator }
+import com.lightbend.lagom.scaladsl.api.{ServiceInfo, ServiceLocator}
 
 import scala.concurrent.ExecutionContext
 
 trait LagomKinesisClientComponents extends TopicFactoryProvider {
   def serviceInfo: ServiceInfo
   def actorSystem: ActorSystem
-  def materializer: Materializer
+  def materializer: ActorMaterializer
   def executionContext: ExecutionContext
   def serviceLocator: ServiceLocator
 
