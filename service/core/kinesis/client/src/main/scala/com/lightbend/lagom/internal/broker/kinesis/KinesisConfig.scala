@@ -6,6 +6,7 @@ package com.lightbend.lagom.internal.broker.kinesis
 import java.util.concurrent.TimeUnit
 
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.InitialPositionInStream
+import com.lightbend.lagom.internal.broker.kinesis.KinesisConfig.KinesisConfigImpl
 import com.typesafe.config.{Config, ConfigException}
 
 import scala.concurrent.duration.{FiniteDuration, _}
@@ -53,6 +54,8 @@ sealed trait ClientConfig {
   def awsSecretKey: Option[String]
 
   def regionName: Option[String]
+
+  def metricsLevel: Option[String]
 }
 
 object ClientConfig {
@@ -64,6 +67,7 @@ object ClientConfig {
     override val awsAccessKey: Option[String] = Some(conf.getString("aws-access-key")).filter(_.nonEmpty)
     override val awsSecretKey: Option[String] = Some(conf.getString("aws-secret-key")).filter(_.nonEmpty)
     override val regionName: Option[String] = Some(conf.getString("region-name")).filter(_.nonEmpty)
+    override val metricsLevel: Option[String] = Some(conf.getString("metrics-level")).filter(_.nonEmpty)
   }
 
 }

@@ -201,7 +201,8 @@ object KinesisSubscriberActor {
       .withMaxRecords(consumerConfig.batchSize)
 
     (for {
-      withRegion <- applyIfDefined(configuration, consumerConfig.regionName) { _.withRegionName(_) }
+      withMetricsLevel <- applyIfDefined(configuration, consumerConfig.metricsLevel) { _.withMetricsLevel(_) }
+      withRegion <- applyIfDefined(withMetricsLevel, consumerConfig.regionName) { _.withRegionName(_) }
       withKinesisEndpoint <- applyIfDefined(withRegion,kinesisEndpoint.orElse(kinesisConfig.kinesisEndpoint)) {
         _.withKinesisEndpoint(_)
       }
