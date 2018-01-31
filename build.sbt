@@ -6,7 +6,7 @@ bintrayOrganization in ThisBuild := Some("streetcontxt")
 resolvers in ThisBuild += Resolver.bintrayRepo("streetcontxt", "maven")
 
 val versionPattern = "release-([0-9\\.]*)".r
-version := sys.props
+version in ThisBuild := sys.props
   .get("CIRCLE_TAG")
   .orElse(sys.env.get("CIRCLE_TAG"))
   .flatMap {
