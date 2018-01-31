@@ -1,9 +1,24 @@
-organization in ThisBuild := "lagom-kinesis"
+organization in ThisBuild := "com.streetcontxt"
 scalaVersion in ThisBuild := "2.11.8"
+licenses in ThisBuild += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0.html"))
+bintrayOrganization in ThisBuild := Some("streetcontxt")
+
+resolvers in ThisBuild += Resolver.bintrayRepo("streetcontxt", "maven")
+
+val versionPattern = "release-([0-9\\.]*)".r
+version := sys.props
+  .get("CIRCLE_TAG")
+  .orElse(sys.env.get("CIRCLE_TAG"))
+  .flatMap {
+    case versionPattern(v) => Some(v)
+    case _ => None
+  }
+  .getOrElse("LOCAL-SNAPSHOT")
+
 
 val slf4j = "org.slf4j" % "log4j-over-slf4j" % "1.7.21"
-val akkaStreamKinesisConsumer = "com.contxt" %% "kcl-akka-stream" % "1.0.1-SNAPSHOT"
-val scalaKinesisProducer = "com.contxt" %% "kpl-scala" % "1.0.1-SNAPSHOT"
+val akkaStreamKinesisConsumer = "com.streetcontxt" %% "kcl-akka-stream" % "1.0.3"
+val scalaKinesisProducer = "com.streetcontxt" %% "kpl-scala" % "1.0.3"
 val awsJavaSdk = "com.amazonaws" % "aws-java-sdk" % "1.11.98"
 val scalaTest = "org.scalatest" %% "scalatest" % "3.0.1"
 val lagomApi = "com.lightbend.lagom" %% "lagom-api" % "1.3.0"
