@@ -82,18 +82,13 @@ object ProducerConfig {
 
   private class ProducerConfigImpl(conf: Config)
     extends ClientConfig.ClientConfigImpl(conf) with ProducerConfig {
-    val role: Option[String] = conf.getString("role") match {
-      case "" => None
-      case other => Some(other)
-    }
+    val role: Option[String] = Some(conf.getString("role")).filter(_.nonEmpty)
   }
 
 }
 
 sealed trait ConsumerConfig extends ClientConfig {
   def applicationName: String
-
-  def initialPositionInStream: InitialPositionInStream
 
   def offsetBuffer: Int
 
@@ -109,10 +104,6 @@ object ConsumerConfig {
       with ConsumerConfig {
 
     def applicationName: String = conf.getString("application-name")
-
-    def initialPositionInStream: InitialPositionInStream =
-      InitialPositionInStream.valueOf(conf.getString("initial-position-in-stream"))
-
     override def offsetBuffer: Int = conf.getInt("max-buffer-size")
     override def batchSize: Int = conf.getInt("max-batch-size")
   }
