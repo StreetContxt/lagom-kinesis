@@ -12,11 +12,9 @@ import akka.pattern.{BackoffSupervisor, pipe}
 import akka.persistence.query.Offset
 import akka.stream._
 import akka.stream.scaladsl._
-import akka.util.ByteString
 import com.amazonaws.auth.{AWSCredentialsProvider, AWSStaticCredentialsProvider, BasicAWSCredentials, DefaultAWSCredentialsProviderChain}
-import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration
 import com.amazonaws.services.kinesis.producer.KinesisProducerConfiguration
-import com.contxt.kinesis.{KinesisRecord, ScalaKinesisProducer}
+import com.contxt.kinesis.ScalaKinesisProducer
 import com.lightbend.lagom.internal.broker.kinesis.ServiceType.{DynamoService, KinesisService}
 import com.lightbend.lagom.internal.persistence.cluster.ClusterDistribution.EnsureActive
 import com.lightbend.lagom.internal.persistence.cluster.{ClusterDistribution, ClusterDistributionSettings}
@@ -187,7 +185,7 @@ private[lagom] object Producer {
         context.stop(self)
     }
 
-    private def run(tag: String, kinesisUri: Option[String], dynamoUri: Option[String], dao: OffsetDao) = {
+    private def run(tag: String, kinesisUri: Option[String], dynamoUri: Option[String], dao: OffsetDao): Unit = {
       val readSideSource = eventStreamFactory(tag, dao.loadedOffset)
 
       val (killSwitch, streamDone) = readSideSource
@@ -219,12 +217,6 @@ private[lagom] object Producer {
     private def kinesisFlowPublisher(kinesisUri: Option[String]): Flow[Message, _, _] = {
       if (kinesisConfig.kinesisEndpoint.isDefined ^ producerConfig.regionName.isDefined)
         throw new IllegalStateException("kinesis endpoint and region name must either both be defined or both be blank")
-
-      val awsEndpointConfig = kinesisUri.orElse(kinesisConfig.kinesisEndpoint).zip(producerConfig.regionName)
-        .map {
-          case (kinesisEndpoint, regionName) =>
-            new EndpointConfiguration(kinesisEndpoint, regionName)
-        }.headOption
 
       if (producerConfig.awsAccessKey.isDefined ^ producerConfig.awsSecretKey.isDefined)
         throw new IllegalStateException("AWS access key and secret key must either both be defined or both be blank")
