@@ -56,7 +56,7 @@ private[lagom] class JavadslKinesisSubscriber[Message](kinesisConfig: KinesisCon
       } else GroupId(groupId)
     }
 
-    if (newGroupId.groupId == groupId) this
+    if (newGroupId == this.groupId) this
     else new JavadslKinesisSubscriber(kinesisConfig, topicCall, newGroupId, info, system, serviceLocator)
   }
 
