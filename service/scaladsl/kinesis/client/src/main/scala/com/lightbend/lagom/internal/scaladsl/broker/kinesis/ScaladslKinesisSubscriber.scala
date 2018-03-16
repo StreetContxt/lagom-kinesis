@@ -55,7 +55,7 @@ class ScaladslKinesisSubscriber[Message](
       } else GroupId(groupId)
     }
 
-    if (newGroupId.groupId == groupId) this
+    if (newGroupId == this.groupId) this
     else new ScaladslKinesisSubscriber(kinesisConfig, topicCall, newGroupId, info, system, serviceLocator)
   }
 
