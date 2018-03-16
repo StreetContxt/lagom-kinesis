@@ -7,10 +7,10 @@ import java.net.URI
 import java.util.UUID
 
 import akka.Done
-import akka.actor.{Actor, ActorLogging, Props, Status}
+import akka.actor.{Status, Actor, ActorLogging, Props}
 import akka.pattern.pipe
 import akka.stream._
-import akka.stream.scaladsl.{Flow, GraphDSL, Keep, Sink, Source, Unzip, Zip}
+import akka.stream.scaladsl.{Keep, Sink, GraphDSL, Source, Zip, Flow, Unzip}
 import akka.util.ByteString
 import com.amazonaws.auth._
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.{DataFetchingStrategy, InitialPositionInStream, KinesisClientLibConfiguration}
@@ -18,7 +18,7 @@ import com.contxt.kinesis.{KinesisRecord, KinesisSource}
 import com.lightbend.lagom.internal.broker.kinesis.KinesisSubscriberActor._
 import com.lightbend.lagom.internal.broker.kinesis.ServiceType._
 
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.concurrent.{Future, ExecutionContext, Promise}
 
 private[lagom] class KinesisSubscriberActor[Message](
   kinesisConfig: KinesisConfig,
@@ -181,14 +181,8 @@ object KinesisSubscriberActor {
     kinesisEndpoint: Option[String],
     dynamoDbEndpoint: Option[String]
   ): KinesisClientLibConfiguration = {
-    val credentialsProvider =
-      new AWSCredentialsProviderChain(
-        new AWSStaticCredentialsProvider(
-          new BasicAWSCredentials(consumerConfig.awsAccessKey.orNull, consumerConfig.awsSecretKey.orNull)
-        ),
-        new DefaultAWSCredentialsProviderChain()
-      )
 
+    val credentialsProvider = buildCredentialsProviderChain(consumerConfig)
     val configuration = new KinesisClientLibConfiguration(
       applicationName,
       topicId,
@@ -237,4 +231,16 @@ object KinesisSubscriberActor {
       recordReader,
       streamCompleted
     ))
+
+  private def buildCredentialsProviderChain(consumerConfig: ConsumerConfig): AWSCredentialsProviderChain = {
+    if (consumerConfig.awsAccessKey.isDefined && consumerConfig.awsSecretKey.isDefined) {
+      new AWSCredentialsProviderChain(
+        new AWSStaticCredentialsProvider(
+          new BasicAWSCredentials(consumerConfig.awsAccessKey.orNull, consumerConfig.awsSecretKey.orNull)),
+        new DefaultAWSCredentialsProviderChain()
+      )
+    } else {
+      new AWSCredentialsProviderChain(new DefaultAWSCredentialsProviderChain())
+    }
+  }
 }
