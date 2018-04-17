@@ -15,7 +15,7 @@ import com.lightbend.lagom.javadsl.api.ServiceLocator;
 import com.lightbend.lagom.javadsl.api.broker.Topic;
 
 import akka.actor.ActorSystem;
-import akka.stream.ActorMaterializer;
+import akka.stream.Materializer;
 import scala.concurrent.ExecutionContext;
 
 /**
@@ -24,13 +24,13 @@ import scala.concurrent.ExecutionContext;
 public class KinesisTopicFactory implements TopicFactory {
     private final ServiceInfo serviceInfo;
     private final ActorSystem system;
-    private final ActorMaterializer materializer;
+    private final Materializer materializer;
     private final ExecutionContext executionContext;
     private final KinesisConfig config;
     private final ServiceLocator serviceLocator;
 
     @Inject
-    public KinesisTopicFactory(ServiceInfo serviceInfo, ActorSystem system, ActorMaterializer materializer,
+    public KinesisTopicFactory(ServiceInfo serviceInfo, ActorSystem system, Materializer materializer,
             ExecutionContext executionContext, ServiceLocator serviceLocator) {
         this.serviceInfo = serviceInfo;
         this.system = system;

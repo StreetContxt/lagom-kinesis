@@ -1,5 +1,6 @@
 organization in ThisBuild := "com.streetcontxt"
 scalaVersion in ThisBuild := "2.11.8"
+crossScalaVersions in ThisBuild := Seq("2.11.8", "2.12.4")
 licenses in ThisBuild += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0.html"))
 bintrayOrganization in ThisBuild := Some("streetcontxt")
 
@@ -17,18 +18,18 @@ version in ThisBuild := sys.props
 
 
 val slf4j = "org.slf4j" % "log4j-over-slf4j" % "1.7.21"
-val akkaStreamKinesisConsumer = "com.streetcontxt" %% "kcl-akka-stream" % "1.0.3"
-val scalaKinesisProducer = "com.streetcontxt" %% "kpl-scala" % "1.0.3"
+val akkaStreamKinesisConsumer = "com.streetcontxt" %% "kcl-akka-stream" % "LOCAL-SNAPSHOT"
+val scalaKinesisProducer = "com.streetcontxt" %% "kpl-scala" % "LOCAL-SNAPSHOT"
 val awsJavaSdk = "com.amazonaws" % "aws-java-sdk" % "1.11.98"
 val scalaTest = "org.scalatest" %% "scalatest" % "3.0.1"
-val lagomApi = "com.lightbend.lagom" %% "lagom-api" % "1.3.0"
-val lagomApiJavaDsl = "com.lightbend.lagom" %% "lagom-javadsl-api" % "1.3.0"
-val lagomApiScalaDsl = "com.lightbend.lagom" %% "lagom-scaladsl-api" % "1.3.0"
-val lagomPersistenceCore = "com.lightbend.lagom" %% "lagom-persistence-core" % "1.3.0"
-val lagomJavadslBroker = "com.lightbend.lagom" %% "lagom-javadsl-broker" % "1.3.0"
-val lagomJavadslServer = "com.lightbend.lagom" %% "lagom-javadsl-server" % "1.3.0"
-val lagomScaladslBroker = "com.lightbend.lagom" %% "lagom-scaladsl-broker" % "1.3.0"
-val lagomScaladslServer = "com.lightbend.lagom" %% "lagom-scaladsl-server" % "1.3.0"
+val lagomApi = "com.lightbend.lagom" %% "lagom-api" % "1.4.4"
+val lagomApiJavaDsl = "com.lightbend.lagom" %% "lagom-javadsl-api" % "1.4.4"
+val lagomApiScalaDsl = "com.lightbend.lagom" %% "lagom-scaladsl-api" % "1.4.4"
+val lagomPersistenceCore = "com.lightbend.lagom" %% "lagom-persistence-core" % "1.4.4"
+val lagomJavadslBroker = "com.lightbend.lagom" %% "lagom-javadsl-broker" % "1.4.4"
+val lagomJavadslServer = "com.lightbend.lagom" %% "lagom-javadsl-server" % "1.4.4"
+val lagomScaladslBroker = "com.lightbend.lagom" %% "lagom-scaladsl-broker" % "1.4.4"
+val lagomScaladslServer = "com.lightbend.lagom" %% "lagom-scaladsl-server" % "1.4.4"
 
 val kinesisProjects = Seq[Project](
   `kinesis-client`,
@@ -84,8 +85,7 @@ lazy val `kinesis-broker` = (project in file("service/core/kinesis/server"))
       scalaKinesisProducer,
       awsJavaSdk,
       lagomApi,
-      lagomPersistenceCore,
-      "org.mock-server" % "mockserver-netty" % "3.10.4"
+      lagomPersistenceCore
     )
   )
   .dependsOn(`kinesis-client`)
