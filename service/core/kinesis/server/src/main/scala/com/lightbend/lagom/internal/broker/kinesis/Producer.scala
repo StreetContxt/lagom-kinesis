@@ -246,7 +246,7 @@ private[lagom] object Producer {
 
       val producer = ScalaKinesisProducer(topicId, configuration)
 
-      Flow[Message].map(serializer).map(msg => producer.send(msg.partitionKey, msg.data, msg.explicitHashKey))
+      Flow[Message].map(serializer).mapAsync(1)(msg => producer.send(msg.partitionKey, msg.data, msg.explicitHashKey))
     }
 
   }
