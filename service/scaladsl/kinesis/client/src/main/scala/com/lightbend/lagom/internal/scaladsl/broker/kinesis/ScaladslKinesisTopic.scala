@@ -4,25 +4,33 @@
 package com.lightbend.lagom.internal.scaladsl.broker.kinesis
 
 import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
+import akka.stream.Materializer
+import akka.util.ByteString
 import com.lightbend.lagom.internal.broker.kinesis.KinesisConfig
 import com.lightbend.lagom.scaladsl.api.Descriptor.TopicCall
 import com.lightbend.lagom.scaladsl.api.broker.Topic.TopicId
 import com.lightbend.lagom.scaladsl.api.broker.{Subscriber, Topic}
+import com.lightbend.lagom.scaladsl.api.deser.MessageSerializer.NegotiatedDeserializer
 import com.lightbend.lagom.scaladsl.api.{ServiceInfo, ServiceLocator}
 
 import scala.concurrent.ExecutionContext
 
-private[lagom] class ScaladslKinesisTopic[Message](kinesisConfig: KinesisConfig,
-                                                   topicCall: TopicCall[Message],
+private[lagom] class ScaladslKinesisTopic[Payload](kinesisConfig: KinesisConfig,
+                                                   topicCall: TopicCall[Payload],
                                                    info: ServiceInfo,
                                                    system: ActorSystem,
                                                    serviceLocator: ServiceLocator)
-                                                  (implicit mat: ActorMaterializer,
-                                                   ec: ExecutionContext) extends Topic[Message] {
+                                                  (implicit mat: Materializer,
+                                                   ec: ExecutionContext) extends Topic[Payload] {
 
   override def topicId: TopicId = topicCall.topicId
 
-  override def subscribe: Subscriber[Message] = new ScaladslKinesisSubscriber(kinesisConfig, topicCall,
-    ScaladslKinesisSubscriber.GroupId.default(info), info, system, serviceLocator)
+  private val deserializer: NegotiatedDeserializer[Payload, ByteString] = {
+    val messageSerializer = topicCall.messageSerializer
+    val protocol = messageSerializer.serializerForRequest.protocol
+    messageSerializer.deserializer(protocol)
+  }
+
+  override def subscribe: Subscriber[Payload] = new ScaladslKinesisSubscriber[Payload, Payload](kinesisConfig, topicCall,
+    ScaladslKinesisSubscriber.GroupId.default(info), info, system, serviceLocator, kr => deserializer.deserialize(kr.data))
 }

@@ -8,15 +8,17 @@ import java.util.concurrent.atomic.AtomicInteger
 import akka.Done
 import akka.actor.{ActorSystem, SupervisorStrategy}
 import akka.pattern.BackoffSupervisor
-import akka.stream.ActorMaterializer
+import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Source}
-import akka.util.ByteString
+import com.contxt.kinesis.KinesisRecord
 import com.contxt.kinesis.KinesisSource
 import com.lightbend.lagom.internal.broker.kinesis._
 import com.lightbend.lagom.scaladsl.api.Descriptor.TopicCall
+import com.lightbend.lagom.scaladsl.api.broker.Message
+import com.lightbend.lagom.scaladsl.api.broker.MetadataKey
 import com.lightbend.lagom.scaladsl.api.broker.Subscriber
-import com.lightbend.lagom.scaladsl.api.deser.MessageSerializer.NegotiatedDeserializer
 import com.lightbend.lagom.scaladsl.api.{ServiceInfo, ServiceLocator}
+import com.lightbend.lagom.scaladsl.broker.kinesis.KinesisMetadataKeys
 import org.slf4j.LoggerFactory
 
 import scala.concurrent.duration.Duration
@@ -25,16 +27,17 @@ import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 /**
  * A Consumer for consuming messages from kinesis using the gfc-aws-kinesis API.
  */
-class ScaladslKinesisSubscriber[Message](
+class ScaladslKinesisSubscriber[Payload, SubscriberPayload](
   kinesisConfig: KinesisConfig,
-  topicCall: TopicCall[Message],
+  topicCall: TopicCall[Payload],
   groupId: Subscriber.GroupId,
   info: ServiceInfo,
   system: ActorSystem,
-  serviceLocator: ServiceLocator
-)(implicit mat: ActorMaterializer, ec: ExecutionContext)
-  extends Subscriber[Message] {
-  private val log = LoggerFactory.getLogger(classOf[ScaladslKinesisSubscriber[_]])
+  serviceLocator: ServiceLocator,
+  transform: KinesisRecord => SubscriberPayload
+)(implicit mat: Materializer, ec: ExecutionContext)
+  extends Subscriber[SubscriberPayload] {
+  private val log = LoggerFactory.getLogger(classOf[ScaladslKinesisSubscriber[_, _]])
 
   import ScaladslKinesisSubscriber._
 
@@ -43,7 +46,7 @@ class ScaladslKinesisSubscriber[Message](
   private def consumerConfig = ConsumerConfig(system.settings.config)
 
   @throws(classOf[IllegalArgumentException])
-  override def withGroupId(groupId: String): Subscriber[Message] = {
+  override def withGroupId(groupId: String): Subscriber[SubscriberPayload] = {
     val newGroupId = {
       if (groupId == null) {
         val defaultGroupId = GroupId.default(info)
@@ -56,16 +59,24 @@ class ScaladslKinesisSubscriber[Message](
     }
 
     if (newGroupId == this.groupId) this
-    else new ScaladslKinesisSubscriber(kinesisConfig, topicCall, newGroupId, info, system, serviceLocator)
+    else new ScaladslKinesisSubscriber(kinesisConfig, topicCall, newGroupId, info, system, serviceLocator, transform)
   }
 
-  private val deserializer: NegotiatedDeserializer[Message, ByteString] = {
-    val messageSerializer = topicCall.messageSerializer
-    val protocol = messageSerializer.serializerForRequest.protocol
-    messageSerializer.deserializer(protocol)
+  override def withMetadata = new ScaladslKinesisSubscriber[Payload, Message[SubscriberPayload]](
+    kinesisConfig, topicCall, groupId, info, system, serviceLocator, wrapPayload
+  )
+
+  private def wrapPayload(record: KinesisRecord): Message[SubscriberPayload] = {
+    Message(transform(record)) +
+      (MetadataKey.MessageKey[String] -> record.partitionKey) +
+      (KinesisMetadataKeys.ApproximateArrivalTimestamp -> record.approximateArrivalTimestamp) +
+      (KinesisMetadataKeys.EncryptionType -> record.encryptionType) +
+      (KinesisMetadataKeys.ExplicitHashKey -> record.explicitHashKey) +
+      (KinesisMetadataKeys.SequenceNumber -> record.sequenceNumber) +
+      (KinesisMetadataKeys.SubSequenceNumber -> record.subSequenceNumber)
   }
 
-  override def atMostOnceSource: Source[Message, _] = {
+  override def atMostOnceSource: Source[SubscriberPayload, _] = {
 
     val eventualDynamoEndpoint = Future.sequence {
       kinesisConfig.dynamodbServiceName.map { dynamoName =>
@@ -79,7 +90,7 @@ class ScaladslKinesisSubscriber[Message](
     }.toList
     ).map(_.find(_.isDefined).flatten)
 
-    val eventualSource: Future[Source[Message, Future[Done]]] = for {
+    val eventualSource: Future[Source[SubscriberPayload, Future[Done]]] = for {
       kinesisEndpoint <- eventualKinesisEndpoint
       dynamoEndpoint <- eventualDynamoEndpoint
       configuration = KinesisSubscriberActor.buildKinesisStreamConsumerConfig(
@@ -91,49 +102,16 @@ class ScaladslKinesisSubscriber[Message](
         dynamoDbEndpoint = dynamoEndpoint.map(_.toString)
       )
     } yield {
-      KinesisSource(configuration)(mat).map { kr =>
+      KinesisSource(configuration).map { kr =>
         kr.markProcessed()
-        deserializer.deserialize(kr.data)
+        transform(kr)
       }
     }
 
     Await.result(eventualSource, Duration.Inf)
   }
 
-  def committableSource: Source[(Message, () => Unit), _] = {
-    val eventualDynamoEndpoint = Future.sequence(
-      kinesisConfig.dynamodbServiceName.map { dynamoName =>
-      serviceLocator.locate(dynamoName)
-    }.toList
-    ).map(_.find(_.isDefined).flatten)
-
-    val eventualKinesisEndpoint = Future.sequence(
-      kinesisConfig.kinesisServiceName.map { kinesisName =>
-      serviceLocator.locate(kinesisName)
-    }.toList
-    ).map(_.find(_.isDefined).flatten)
-
-    val eventualSource: Future[Source[(Message, () => Unit), Future[Done]]] = for {
-      kinesisEndpoint <- eventualKinesisEndpoint
-      dynamoEndpoint <- eventualDynamoEndpoint
-      configuration = KinesisSubscriberActor.buildKinesisStreamConsumerConfig(
-        consumerConfig = consumerConfig,
-        topicId = topicCall.topicId.name,
-        applicationName = groupId.groupId,
-        kinesisConfig = kinesisConfig,
-        kinesisEndpoint = kinesisEndpoint.map(_.toString),
-        dynamoDbEndpoint = dynamoEndpoint.map(_.toString)
-      )
-    } yield {
-      KinesisSource(configuration)(mat).map { kr =>
-        (deserializer.deserialize(kr.data), kr.markProcessed _)
-      }
-    }
-
-    Await.result(eventualSource, Duration.Inf)
-  }
-
-  override def atLeastOnce(flow: Flow[Message, Done, _]): Future[Done] = {
+  override def atLeastOnce(flow: Flow[SubscriberPayload, Done, _]): Future[Done] = {
     val streamCompleted = Promise[Done]
     val consumerProps = KinesisSubscriberActor.props(
       kinesisConfig,
@@ -142,8 +120,8 @@ class ScaladslKinesisSubscriber[Message](
       topicCall.topicId.name,
       groupId.groupId,
       flow,
-      deserializer.deserialize,
-      streamCompleted
+      streamCompleted,
+      transform
     )
 
     val backoffConsumerProps = BackoffSupervisor.propsWithSupervisorStrategy(

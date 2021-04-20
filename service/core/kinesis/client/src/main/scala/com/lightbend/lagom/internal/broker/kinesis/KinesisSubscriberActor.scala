@@ -11,7 +11,6 @@ import akka.actor.{Status, Actor, ActorLogging, Props}
 import akka.pattern.pipe
 import akka.stream._
 import akka.stream.scaladsl.{Keep, Sink, GraphDSL, Source, Zip, Flow, Unzip}
-import akka.util.ByteString
 import com.amazonaws.auth._
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.{DataFetchingStrategy, InitialPositionInStream, KinesisClientLibConfiguration}
 import com.contxt.kinesis.{KinesisRecord, KinesisSource}
@@ -20,17 +19,17 @@ import com.lightbend.lagom.internal.broker.kinesis.ServiceType._
 
 import scala.concurrent.{Future, ExecutionContext, Promise}
 
-private[lagom] class KinesisSubscriberActor[Message](
+private[lagom] class KinesisSubscriberActor[Payload](
   kinesisConfig: KinesisConfig,
   consumerConfig: ConsumerConfig,
   locateService: String => Future[Option[URI]],
   topicId: String,
   groupId: String,
-  flow: Flow[Message, Done, _],
-  recordReader: ByteString => Message,
-  streamCompleted: Promise[Done]
+  flow: Flow[Payload, Done, _],
+  streamCompleted: Promise[Done],
+  transform: KinesisRecord => Payload
 )(implicit
-  mat: ActorMaterializer,
+  mat: Materializer,
   ec: ExecutionContext) extends Actor
   with ActorLogging {
 
@@ -106,9 +105,9 @@ private[lagom] class KinesisSubscriberActor[Message](
       ))
   }
 
-  private def run(kinesisEndpoint: Option[String], dynamoEndpoint: Option[String]) = {
+  private def run(kinesisEndpoint: Option[String], dynamoEndpoint: Option[String]): Unit = {
     val (killSwitch, streamDone) =
-      atLeastOnce(flow, kinesisEndpoint, dynamoEndpoint)
+      atLeastOnce(kinesisEndpoint, dynamoEndpoint)
         .viaMat(KillSwitches.single)(Keep.right)
         .toMat(Sink.ignore)(Keep.both)
         .run()
@@ -136,18 +135,17 @@ private[lagom] class KinesisSubscriberActor[Message](
   override def receive: Receive = PartialFunction.empty
 
   private def atLeastOnce(
-    flow: Flow[Message, Done, _],
     kinesisEndpoint: Option[String],
     dynamoEndpoint: Option[String]
   ): Source[Done, _] = {
-    val streamConfig = buildKinesisStreamConsumerConfig[Message](consumerConfig, topicId, groupId, kinesisConfig,
+    val streamConfig = buildKinesisStreamConsumerConfig[Payload](consumerConfig, topicId, groupId, kinesisConfig,
       kinesisEndpoint, dynamoEndpoint)
-    val pairedCommittableSource = KinesisSource(streamConfig)(mat).map(kr => (kr, recordReader(kr.data)))
+    val pairedCommittableSource = KinesisSource(streamConfig).map(kr => (kr, transform(kr)))
 
     val committOffsetFlow =
       Flow.fromGraph(GraphDSL.create(flow) { implicit builder => flow =>
         import GraphDSL.Implicits._
-        val unzip = builder.add(Unzip[KinesisRecord, Message])
+        val unzip = builder.add(Unzip[KinesisRecord, Payload])
         val zip = builder.add(Zip[KinesisRecord, Done])
         val committer = {
           val commitFlow = Flow[(KinesisRecord, Done)].map {
@@ -211,25 +209,25 @@ object KinesisSubscriberActor {
     maybeV.map(v => f(t, v)).orElse(Some(t))
 
 
-  def props[Message](
+  def props[Payload](
     kinesisConfig: KinesisConfig,
     consumerConfig: ConsumerConfig,
     locateService: String => Future[Option[URI]],
     topicId: String,
     groupId: String,
-    flow: Flow[Message, Done, _],
-    recordReader: ByteString => Message,
-    streamCompleted: Promise[Done]
-  )(implicit mat: ActorMaterializer, ec: ExecutionContext) =
-    Props(new KinesisSubscriberActor[Message](
+    flow: Flow[Payload, Done, _],
+    streamCompleted: Promise[Done],
+    transform: KinesisRecord => Payload
+  )(implicit mat: Materializer, ec: ExecutionContext) =
+    Props(new KinesisSubscriberActor[Payload](
       kinesisConfig,
       consumerConfig,
       locateService,
       topicId,
       groupId,
       flow,
-      recordReader,
-      streamCompleted
+      streamCompleted,
+      transform
     ))
 
   private def buildCredentialsProviderChain(consumerConfig: ConsumerConfig): AWSCredentialsProviderChain = {
